@@ -1,0 +1,283 @@
+# Red Hat Container Catalog GraphQL API Contract
+# Endpoint: https://catalog.redhat.com/api/containers/graphql
+# Authentication: None (public endpoint)
+
+# ============================================================================
+# QUERIES
+# ============================================================================
+
+"""
+Fetch container image metadata and latest version information
+"""
+query GetContainerImage($imageName: String!) {
+  containerImage(name: $imageName) {
+    _id
+    name
+    repository
+    latestVersion {
+      version
+      createdDate
+      architecture
+    }
+    vendor
+    lastUpdated
+  }
+}
+
+"""
+Fetch security data (CVEs) for a specific container image
+Returns CVE list with severity, affected packages, and advisory URLs
+"""
+query GetContainerImageSecurityData($imageId: ID!) {
+  containerImageSecurityData(imageId: $imageId) {
+    cves {
+      cveId
+      severity
+      cvssScore
+      affectedPackages {
+        packageName
+        fixedInVersion
+      }
+      publishedDate
+      advisoryUrl
+      description
+    }
+    securityGrade
+    totalCveCount
+    criticalCount
+    importantCount
+    moderateCount
+    lowCount
+  }
+}
+
+"""
+Combined query to fetch image metadata and security data in one request
+Optimized for monitoring workflow (reduces round trips)
+"""
+query GetImageWithSecurity($imageName: String!) {
+  containerImage(name: $imageName) {
+    _id
+    name
+    repository
+    latestVersion {
+      version
+      createdDate
+      architecture
+    }
+    vendor
+    lastUpdated
+
+    # Nested security data (if supported by API)
+    securityData {
+      cves {
+        cveId
+        severity
+        cvssScore
+        affectedPackages {
+          packageName
+          fixedInVersion
+        }
+        publishedDate
+        advisoryUrl
+        description
+      }
+      totalCveCount
+      criticalCount
+      importantCount
+      moderateCount
+      lowCount
+    }
+  }
+}
+
+# ============================================================================
+# TYPE DEFINITIONS (based on Red Hat Catalog API schema)
+# ============================================================================
+
+"""
+Container image entity from Red Hat Catalog
+"""
+type ContainerImage {
+  _id: ID!
+  name: String!
+  repository: String!
+  latestVersion: ImageVersion
+  vendor: String
+  lastUpdated: String  # ISO 8601 date string
+}
+
+"""
+Image version information
+"""
+type ImageVersion {
+  version: String!
+  createdDate: String!  # ISO 8601 date string
+  architecture: String  # e.g., "amd64", "arm64"
+}
+
+"""
+Security data for a container image
+"""
+type ContainerImageSecurityData {
+  cves: [CVE!]!
+  securityGrade: String  # e.g., "A", "B", "C", "D", "F"
+  totalCveCount: Int!
+  criticalCount: Int!
+  importantCount: Int!
+  moderateCount: Int!
+  lowCount: Int!
+}
+
+"""
+CVE (Common Vulnerabilities and Exposures) entry
+"""
+type CVE {
+  cveId: String!  # e.g., "CVE-2024-1234"
+  severity: String!  # "Critical" | "Important" | "Moderate" | "Low"
+  cvssScore: Float  # 0.0 to 10.0, null if unavailable
+  affectedPackages: [AffectedPackage!]!
+  publishedDate: String!  # ISO 8601 date string
+  advisoryUrl: String!  # Red Hat security advisory URL
+  description: String
+}
+
+"""
+Package affected by a CVE
+"""
+type AffectedPackage {
+  packageName: String!  # e.g., "openssl"
+  fixedInVersion: String  # Version with fix, null if not yet fixed
+}
+
+# ============================================================================
+# EXAMPLE USAGE
+# ============================================================================
+
+# Example 1: Fetch basic image info
+# Variables: { "imageName": "ubi8/ubi" }
+#
+# Response:
+# {
+#   "data": {
+#     "containerImage": {
+#       "_id": "abc123",
+#       "name": "ubi8/ubi",
+#       "repository": "registry.access.redhat.com/ubi8/ubi",
+#       "latestVersion": {
+#         "version": "8.10",
+#         "createdDate": "2024-10-15T12:00:00Z",
+#         "architecture": "amd64"
+#       },
+#       "vendor": "Red Hat",
+#       "lastUpdated": "2024-10-15T12:00:00Z"
+#     }
+#   }
+# }
+
+# Example 2: Fetch security data
+# Variables: { "imageId": "abc123" }
+#
+# Response:
+# {
+#   "data": {
+#     "containerImageSecurityData": {
+#       "cves": [
+#         {
+#           "cveId": "CVE-2024-1234",
+#           "severity": "Critical",
+#           "cvssScore": 9.8,
+#           "affectedPackages": [
+#             {
+#               "packageName": "openssl",
+#               "fixedInVersion": "1.1.1k-8"
+#             }
+#           ],
+#           "publishedDate": "2024-01-15T00:00:00Z",
+#           "advisoryUrl": "https://access.redhat.com/security/cve/CVE-2024-1234",
+#           "description": "Buffer overflow in OpenSSL..."
+#         }
+#       ],
+#       "totalCveCount": 5,
+#       "criticalCount": 1,
+#       "importantCount": 2,
+#       "moderateCount": 1,
+#       "lowCount": 1
+#     }
+#   }
+# }
+
+# ============================================================================
+# ERROR HANDLING
+# ============================================================================
+
+# Error Case 1: Image not found
+# Response:
+# {
+#   "errors": [
+#     {
+#       "message": "Container image not found",
+#       "extensions": {
+#         "code": "NOT_FOUND"
+#       }
+#     }
+#   ],
+#   "data": null
+# }
+
+# Error Case 2: Invalid image name
+# Response:
+# {
+#   "errors": [
+#     {
+#       "message": "Invalid image name format",
+#       "extensions": {
+#         "code": "BAD_USER_INPUT"
+#       }
+#     }
+#   ],
+#   "data": null
+# }
+
+# Error Case 3: Rate limit exceeded
+# HTTP Status: 429 Too Many Requests
+# Response:
+# {
+#   "errors": [
+#     {
+#       "message": "Rate limit exceeded. Please retry after 60 seconds.",
+#       "extensions": {
+#         "code": "RATE_LIMIT_EXCEEDED",
+#         "retryAfter": 60
+#       }
+#     }
+#   ]
+# }
+
+# ============================================================================
+# CONTRACT REQUIREMENTS FOR INTEGRATION TESTS
+# ============================================================================
+
+# Integration tests MUST validate:
+# 1. Query structure matches this schema exactly
+# 2. Response contains all required fields (marked with !)
+# 3. Response types match expected types (String, Int, Float, etc.)
+# 4. CVE IDs match pattern: CVE-\d{4}-\d{4,}
+# 5. Severity values are: "Critical", "Important", "Moderate", or "Low"
+# 6. Date strings are valid ISO 8601 format
+# 7. CVSS scores are in range [0.0, 10.0] when present
+# 8. Advisory URLs are valid HTTPS URLs
+# 9. Error responses include 'errors' array with 'message' and 'extensions.code'
+# 10. Rate limit errors include 'retryAfter' value
+
+# ============================================================================
+# RATE LIMITING & BEST PRACTICES
+# ============================================================================
+
+# - No documented rate limits, but implement exponential backoff for 429 responses
+# - Batch image queries when possible (use combined query)
+# - Cache responses for 24 hours (CVE data doesn't change frequently)
+# - Use conditional requests with If-Modified-Since header (if supported)
+# - Implement circuit breaker: stop querying after 3 consecutive failures
+# - Timeout: Set 5-second timeout for GraphQL queries
+# - Retry policy: Max 3 retries with exponential backoff (1s, 2s, 4s)
