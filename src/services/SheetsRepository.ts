@@ -177,6 +177,38 @@ export class SheetsRepository extends SheetsAdapter {
   }
 
   /**
+   * Get previous health status for an image
+   * Reads the most recent historical snapshot for the given image
+   *
+   * @param imageName - Image name to look up
+   * @returns Previous health status and score, or null if no history exists
+   */
+  public getPreviousHealthStatus(imageName: string): { status: HealthStatus; score: number } | null {
+    const data = this.readAllData(SheetName.HISTORICAL);
+
+    // Find all rows for this image (skip header row)
+    const imageRows = data
+      .filter(row => row[1] === imageName) // Column B: Image Name
+      .map(row => ({
+        timestamp: row[0],                // Column A: Timestamp
+        healthIndex: Number(row[8]) || 0, // Column I: Health Index
+        healthStatus: row[9] as HealthStatus // Column J: Health Status
+      }));
+
+    // Return null if no history
+    if (imageRows.length === 0) {
+      return null;
+    }
+
+    // Return most recent (last) entry
+    const mostRecent = imageRows[imageRows.length - 1];
+    return {
+      status: mostRecent.healthStatus,
+      score: mostRecent.healthIndex
+    };
+  }
+
+  /**
    * Delete all rows for a specific image from a sheet
    * Helper method for writeCVEData
    *
