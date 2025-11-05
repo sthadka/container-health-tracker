@@ -1,0 +1,34 @@
+{
+  "name": "container-health-tracker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "vite build && cp appsscript.json dist/",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
+    "validate": "npx tsx validate-contract.ts",
+    "test:api": "node test-graphql.js",
+    "push": "pnpm validate && pnpm build && clasp push --force",
+    "deploy": "pnpm validate && pnpm build && clasp push --force && clasp deploy",
+    "logs": "clasp logs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.17.1",
+  "devDependencies": {
+    "@types/google-apps-script": "^2.0.7",
+    "@types/node": "^24.9.2",
+    "@vitest/ui": "^4.0.6",
+    "graphql": "^16.11.0",
+    "graphql-request": "^7.3.1",
+    "msw": "^2.11.6",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12",
+    "vitest": "^4.0.6"
+  }
+}
