@@ -130,19 +130,19 @@ description: "Task list for Container Health Monitor implementation"
 
 ### Implementation for User Story 2
 
-- [ ] T061 [P] [US2] Implement EmailNotifier class with Gmail API integration in src/integrations/notifiers/EmailNotifier.ts
-- [ ] T062 [P] [US2] Implement SlackNotifier class with webhook integration in src/integrations/notifiers/SlackNotifier.ts
-- [ ] T063 [US2] Implement formatEmailHTML template renderer in src/integrations/notifiers/EmailNotifier.ts
-- [ ] T064 [US2] Implement buildSlackPayload with Block Kit formatting in src/integrations/notifiers/SlackNotifier.ts
-- [ ] T065 [US2] Implement NotificationService dispatcher in src/services/NotificationService.ts
-- [ ] T066 [US2] Implement send method with multi-channel support in NotificationService
-- [ ] T067 [US2] Implement health status change detection in MonitoringOrchestrator
-- [ ] T068 [US2] Integrate NotificationService into processImage method in MonitoringOrchestrator
-- [ ] T069 [US2] Add notification delivery status tracking in MonitoringOrchestrator
-- [ ] T070 [US2] Implement notification consolidation (single alert for multiple images)
-- [ ] T071 [US2] Add error handling for notification failures (log but don't block run)
-- [ ] T072 [US2] Configure EMAIL_RECIPIENTS in Apps Script Properties
-- [ ] T073 [US2] Configure SLACK_WEBHOOK_URL in Apps Script Properties
+- [x] T061 [P] [US2] Implement EmailNotifier class with Gmail API integration in src/integrations/notifiers/EmailNotifier.ts
+- [x] T062 [P] [US2] Implement SlackNotifier class with webhook integration in src/integrations/notifiers/SlackNotifier.ts
+- [x] T063 [US2] Implement formatEmailHTML template renderer in src/integrations/notifiers/EmailNotifier.ts
+- [x] T064 [US2] Implement buildSlackPayload with Block Kit formatting in src/integrations/notifiers/SlackNotifier.ts
+- [x] T065 [US2] Implement NotificationService dispatcher in src/services/NotificationService.ts
+- [x] T066 [US2] Implement send method with multi-channel support in NotificationService
+- [x] T067 [US2] Implement health status change detection in MonitoringOrchestrator
+- [x] T068 [US2] Integrate NotificationService into processImage method in MonitoringOrchestrator
+- [x] T069 [US2] Add notification delivery status tracking in MonitoringOrchestrator
+- [x] T070 [US2] Implement notification consolidation (single alert for multiple images)
+- [x] T071 [US2] Add error handling for notification failures (log but don't block run)
+- [x] T072 [US2] Configure EMAIL_RECIPIENTS in Apps Script Properties
+- [x] T073 [US2] Configure SLACK_WEBHOOK_URL in Apps Script Properties
 - [ ] T074 [US2] Test email notification delivery with real Gmail API
 - [ ] T075 [US2] Test Slack notification delivery with real webhook
 - [ ] T076 [US2] Verify notification content includes all required fields (image, CVEs, severity, packages)
