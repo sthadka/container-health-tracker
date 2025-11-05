@@ -12,30 +12,159 @@ This document consolidates technical research and decisions for implementing the
 
 ### 1. Red Hat Container Catalog GraphQL API
 
-**Decision**: Use public GraphQL endpoint at `https://catalog.redhat.com/api/containers/graphql`
+**Decision**: Use public GraphQL endpoint at `https://catalog.redhat.com/api/containers/graphql/` (note trailing slash)
 
 **Rationale**:
-- No authentication required for public container image data
+- No authentication required for public container image data (confirmed in official docs)
 - GraphQL provides precise queries, avoiding over-fetching REST endpoint data
-- Single query can fetch image metadata + CVE list + security advisories in one round trip
-- Official Red Hat documentation confirms public access to container security data
+- Multi-step workflow required: find repository → find images → identify latest → query vulnerabilities
+- Official documentation provides complete query examples and data model
 
 **Alternatives Considered**:
-- **REST API**: Red Hat also provides REST endpoints, but they require multiple round trips (one for image metadata, one for CVEs, one for advisories)
+- **REST API**: Red Hat also provides REST endpoints, but they require multiple round trips
 - **Web scraping**: Fragile and violates Red Hat's terms of service
 - **Third-party CVE databases**: Would require cross-referencing image names, less reliable than authoritative source
 
-**Implementation Details**:
-- GraphQL endpoint: `https://catalog.redhat.com/api/containers/graphql`
-- Key queries needed:
-  - `containerImage(name: String)` - fetch image metadata and latest version
-  - `containerImageSecurityData(imageId: ID)` - fetch CVEs with severity, affected packages
-- Response includes: CVE ID, severity (Critical/Important/Moderate/Low), affected RPM packages, CVSS scores, publication date
-- Rate limiting: Not publicly documented, implement exponential backoff for 429 responses
+**Implementation Details (Based on Official Documentation)**:
+
+**Endpoint**: `https://catalog.redhat.com/api/containers/graphql/`
+**Method**: POST
+**Content-Type**: `application/json`
+
+**Three-Step Query Workflow**:
+
+1. **Find Repository** using `find_repositories`:
+   ```graphql
+   query {
+     find_repositories(
+       page: 0,
+       page_size: 10,
+       filter: { repository: { eq: "advanced-cluster-security/rhacs-scanner-db-slim-rhel8" } }
+     ) {
+       data {
+         _id
+         registry
+         repository
+       }
+     }
+   }
+   ```
+
+2. **Find All Images** using `find_repository_images_by_registry_path`:
+   ```graphql
+   query {
+     find_repository_images_by_registry_path(
+       registry: "registry.access.redhat.com",
+       repository: "advanced-cluster-security/rhacs-scanner-db-slim-rhel8",
+       page: 0,
+       page_size: 500
+     ) {
+       data {
+         _id                    # CRITICAL: Use this for vulnerability queries, NOT docker_image_id
+         docker_image_id
+         creation_date
+         architecture
+         repositories {
+           tags {
+             name
+             added_date
+           }
+         }
+         parsed_data {
+           labels {
+             name
+             value
+           }
+         }
+       }
+     }
+   }
+   ```
+
+3. **Query Vulnerabilities** using `find_image_vulnerabilities`:
+   ```graphql
+   query FIND_IMAGE_VULNERABILITIES($id: String, $page: Int, $pageSize: Int) {
+     ContainerImageVulnerability: find_image_vulnerabilities(
+       id: $id
+       page: $page
+       page_size: $pageSize
+     ) {
+       data {
+         _id
+         creation_date
+         advisory_id
+         advisory_type
+         cve_id
+         severity
+         affected_packages {
+           name
+           version
+           arch
+           package_type
+         }
+         packages {
+           rpm_nvra
+         }
+       }
+     }
+   }
+   ```
+
+**Critical Implementation Notes**:
+
+1. **Use `_id` (MongoDB ObjectID), NOT `docker_image_id` (SHA256 digest)** for vulnerability queries
+2. **Latest version detection**:
+   - Extract tags from `repositories[0].tags[].name`
+   - Parse as semantic versions (handle formats like `4.9.0-1`)
+   - Sort by highest semantic version tag
+   - For same tag, use most recent `creation_date`
+   - **WARNING**: `parsed_data.labels[]` may NOT contain version label for newer images
+3. **Pagination**:
+   - Images query: max `page_size: 500`
+   - Vulnerabilities query: max `page_size: 250` (recommended)
+   - Check if `data.length == page_size` to determine if more pages exist
+4. **Multi-architecture handling**: Single tag may point to multiple images (amd64, arm64, ppc64le, s390x)
+5. **Rate limiting**: No official limits documented, but implement exponential backoff for 429 responses
+
+**Data Model (from official API)**:
+- **ContainerRepository**: `_id`, `registry`, `repository`
+- **ContainerImage**: `_id` (ObjectID), `docker_image_id` (SHA256), `creation_date`, `repositories[].tags[]`
+- **ContainerImageVulnerability**: `_id`, `cve_id`, `severity`, `advisory_id`, `affected_packages[]`, `packages[].rpm_nvra[]`
+
+**Response Example**:
+```json
+{
+  "data": {
+    "ContainerImageVulnerability": {
+      "data": [
+        {
+          "_id": "...",
+          "cve_id": "CVE-2024-0985",
+          "severity": "Important",
+          "advisory_id": "2024:0974",
+          "advisory_type": "RHSA",
+          "affected_packages": [
+            {
+              "name": "postgresql",
+              "version": "12.9-1",
+              "arch": "x86_64",
+              "package_type": "rpm"
+            }
+          ],
+          "packages": {
+            "rpm_nvra": ["postgresql-12.9-1.el8.x86_64"]
+          }
+        }
+      ]
+    }
+  }
+}
+```
 
 **References**:
-- Red Hat Catalog GraphQL playground: https://catalog.redhat.com/api/containers/graphql
-- Example query validated in browser console
+- Complete API guide: `docs/query-image-vuln-graphql.md`
+- GraphQL endpoint: https://catalog.redhat.com/api/containers/graphql/
+- Interactive GraphiQL: https://catalog.redhat.com/api/containers/graphql/ (in browser)
 
 ### 2. Google Apps Script Build Pipeline with Vite
 

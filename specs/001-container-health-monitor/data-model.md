@@ -19,8 +19,15 @@ Represents a container image being tracked for security vulnerabilities.
 ```typescript
 interface MonitoredImage {
   // Identification
-  imageName: string;              // e.g., "ubi8/ubi", from Red Hat catalog
-  currentVersion: string;         // e.g., "8.10", latest available version
+  registry: string;               // e.g., "registry.access.redhat.com"
+  repository: string;             // e.g., "rhel8/postgresql-12" or "ubi8/ubi"
+  repositoryId: string;           // Repository _id from Red Hat API (for caching)
+
+  // Current Image Version (from Red Hat API)
+  imageId: string;                // CRITICAL: _id (MongoDB ObjectID) for vulnerability queries
+  currentVersion: string;         // Latest semantic version tag (e.g., "4.9.0-1")
+  dockerImageId: string;          // SHA256 digest (for reference only, NOT used for API queries)
+  architecture: string;           // e.g., "amd64", "arm64" (default to amd64 if not specified)
 
   // Monitoring Configuration
   enabled: boolean;               // Whether to include in monitoring runs
@@ -45,8 +52,12 @@ interface MonitoredImage {
 ```
 
 **Validation Rules**:
-- `imageName` MUST match pattern `[a-z0-9-]+/[a-z0-9-]+` (Red Hat catalog format)
-- `currentVersion` MUST be non-empty string
+- `registry` MUST be valid registry hostname (e.g., `registry.access.redhat.com`)
+- `repository` MUST match pattern `[a-z0-9-]+/[a-z0-9-]+` (Red Hat catalog format)
+- `repositoryId` MUST be 24-character hex string (MongoDB ObjectID)
+- `imageId` MUST be 24-character hex string (MongoDB ObjectID) - **CRITICAL: use for vulnerability queries**
+- `dockerImageId` MUST start with `sha256:` - **DO NOT use for vulnerability queries**
+- `currentVersion` MUST be non-empty string (parsed from tags, not labels)
 - `enabled` defaults to `true`
 - `severityThreshold` defaults to `Important`
 - `healthIndex` MUST be in range [0, 100]
@@ -80,37 +91,56 @@ Represents a specific CVE (Common Vulnerabilities and Exposures) affecting a mon
 ```typescript
 interface CVERecord {
   // CVE Identification
+  vulnerabilityId: string;        // Vulnerability entry _id from Red Hat API
   cveId: string;                  // e.g., "CVE-2024-1234"
-  imageName: string;              // Which image this CVE affects (FK to MonitoredImage)
-  imageVersion: string;           // Version of image when CVE was discovered
+
+  // Image Association
+  imageId: string;                // Image _id from Red Hat API (MongoDB ObjectID)
+  repository: string;             // Repository path (e.g., "rhel8/postgresql-12")
+  imageVersion: string;           // Version tag when CVE was discovered (e.g., "4.9.0-1")
+
+  // Red Hat Advisory Information
+  advisoryId: string;             // Red Hat advisory ID (e.g., "2024:0974")
+  advisoryType: string;           // Advisory type (e.g., "RHSA", "RHBA")
 
   // Severity & Impact
   severity: Severity;             // Critical | Important | Moderate | Low
-  cvssScore: number | null;       // CVSS base score (0-10), null if unavailable
+  cvssScore: number | null;       // CVSS base score (0-10), NOT provided by Red Hat API
 
-  // Affected Components
-  affectedPackages: string[];     // List of RPM package names (e.g., ["openssl", "libcurl"])
+  // Affected Components (from Red Hat API)
+  affectedPackages: Array<{
+    name: string;                 // Package name (e.g., "postgresql")
+    version: string;              // Package version (e.g., "12.9-1")
+    arch: string;                 // Architecture (e.g., "x86_64")
+    packageType: string;          // Package type (e.g., "rpm")
+  }>;
+  rpmPackages: string[];          // Full RPM NVRA strings (e.g., ["postgresql-12.9-1.el8.x86_64"])
 
   // Temporal Data
   discoveryDate: Date;            // When this CVE was first detected by our system
-  publishedDate: Date;            // Official CVE publication date from Red Hat
+  publishedDate: Date;            // Official CVE publication/creation date from Red Hat
   resolvedDate: Date | null;      // When CVE no longer present (image updated), null if active
 
   // Reference Links
-  advisoryUrl: string;            // Red Hat security advisory URL
+  advisoryUrl: string;            // Constructed: https://access.redhat.com/security/cve/{cveId}
 }
 ```
 
 **Validation Rules**:
+- `vulnerabilityId` MUST be valid (from Red Hat API response)
 - `cveId` MUST match pattern `CVE-\d{4}-\d{4,}` (e.g., CVE-2024-1234)
-- `imageName` MUST reference existing `MonitoredImage.imageName`
+- `imageId` MUST be 24-character hex string (MongoDB ObjectID)
+- `repository` MUST reference existing `MonitoredImage.repository`
+- `advisoryId` MUST be non-empty string
+- `advisoryType` typically "RHSA" (Red Hat Security Advisory) or "RHBA"
 - `severity` MUST be one of: `Critical`, `Important`, `Moderate`, `Low`
-- `cvssScore` MUST be in range [0.0, 10.0] if not null
+- `cvssScore` MUST be in range [0.0, 10.0] if not null (NOTE: Red Hat API may not provide this)
 - `affectedPackages` MUST be non-empty array
+- `rpmPackages` MUST be non-empty array (from API `packages.rpm_nvra`)
 - `discoveryDate` MUST be ≤ current date
 - `publishedDate` MUST be ≤ `discoveryDate` (we can't discover before publication)
 - `resolvedDate` MUST be > `discoveryDate` if not null
-- `advisoryUrl` MUST be valid HTTPS URL
+- `advisoryUrl` MUST be valid HTTPS URL (construct as: `https://access.redhat.com/security/cve/${cveId}`)
 
 **Relationships**:
 - Belongs to one `MonitoredImage` (many-to-one)

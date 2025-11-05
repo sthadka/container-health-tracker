@@ -1,222 +1,407 @@
 # Red Hat Container Catalog GraphQL API Contract
-# Endpoint: https://catalog.redhat.com/api/containers/graphql
-# Authentication: None (public endpoint)
+# Source: docs/query-image-vuln-graphql.md (official documentation)
+# Endpoint: https://catalog.redhat.com/api/containers/graphql/
+# Authentication: None (public endpoint - unauthenticated access supported)
 
 # ============================================================================
-# QUERIES
+# IMPORTANT IMPLEMENTATION NOTES
+# ============================================================================
+# 1. Use _id (MongoDB ObjectID) for vulnerability queries, NOT docker_image_id
+# 2. Latest version detection: parse tags from repositories[].tags[], NOT labels
+# 3. Pagination: images max 500, vulnerabilities max 250 per page
+# 4. Multi-arch: single tag may reference multiple images (amd64, arm64, etc.)
+# 5. Rate limiting: no official limits, but implement exponential backoff
+
+# ============================================================================
+# STEP 1: FIND REPOSITORY
 # ============================================================================
 
 """
-Fetch container image metadata and latest version information
+Find container repository by exact repository path
+Returns repository metadata including _id for subsequent queries
 """
-query GetContainerImage($imageName: String!) {
-  containerImage(name: $imageName) {
-    _id
-    name
-    repository
-    latestVersion {
-      version
-      createdDate
-      architecture
+query FindRepository($repositoryPath: String!) {
+  find_repositories(
+    page: 0,
+    page_size: 10,
+    filter: {
+      repository: { eq: $repositoryPath }
     }
-    vendor
-    lastUpdated
+  ) {
+    data {
+      _id          # Repository ObjectID
+      registry     # e.g., "registry.access.redhat.com"
+      repository   # e.g., "rhel8/postgresql-12"
+    }
+    total
+    page
+    page_size
   }
 }
 
-"""
-Fetch security data (CVEs) for a specific container image
-Returns CVE list with severity, affected packages, and advisory URLs
-"""
-query GetContainerImageSecurityData($imageId: ID!) {
-  containerImageSecurityData(imageId: $imageId) {
-    cves {
-      cveId
-      severity
-      cvssScore
-      affectedPackages {
-        packageName
-        fixedInVersion
-      }
-      publishedDate
-      advisoryUrl
-      description
-    }
-    securityGrade
-    totalCveCount
-    criticalCount
-    importantCount
-    moderateCount
-    lowCount
-  }
-}
+# Example variables:
+# { "repositoryPath": "advanced-cluster-security/rhacs-scanner-db-slim-rhel8" }
 
-"""
-Combined query to fetch image metadata and security data in one request
-Optimized for monitoring workflow (reduces round trips)
-"""
-query GetImageWithSecurity($imageName: String!) {
-  containerImage(name: $imageName) {
-    _id
-    name
-    repository
-    latestVersion {
-      version
-      createdDate
-      architecture
-    }
-    vendor
-    lastUpdated
-
-    # Nested security data (if supported by API)
-    securityData {
-      cves {
-        cveId
-        severity
-        cvssScore
-        affectedPackages {
-          packageName
-          fixedInVersion
-        }
-        publishedDate
-        advisoryUrl
-        description
-      }
-      totalCveCount
-      criticalCount
-      importantCount
-      moderateCount
-      lowCount
-    }
-  }
-}
-
-# ============================================================================
-# TYPE DEFINITIONS (based on Red Hat Catalog API schema)
-# ============================================================================
-
-"""
-Container image entity from Red Hat Catalog
-"""
-type ContainerImage {
-  _id: ID!
-  name: String!
-  repository: String!
-  latestVersion: ImageVersion
-  vendor: String
-  lastUpdated: String  # ISO 8601 date string
-}
-
-"""
-Image version information
-"""
-type ImageVersion {
-  version: String!
-  createdDate: String!  # ISO 8601 date string
-  architecture: String  # e.g., "amd64", "arm64"
-}
-
-"""
-Security data for a container image
-"""
-type ContainerImageSecurityData {
-  cves: [CVE!]!
-  securityGrade: String  # e.g., "A", "B", "C", "D", "F"
-  totalCveCount: Int!
-  criticalCount: Int!
-  importantCount: Int!
-  moderateCount: Int!
-  lowCount: Int!
-}
-
-"""
-CVE (Common Vulnerabilities and Exposures) entry
-"""
-type CVE {
-  cveId: String!  # e.g., "CVE-2024-1234"
-  severity: String!  # "Critical" | "Important" | "Moderate" | "Low"
-  cvssScore: Float  # 0.0 to 10.0, null if unavailable
-  affectedPackages: [AffectedPackage!]!
-  publishedDate: String!  # ISO 8601 date string
-  advisoryUrl: String!  # Red Hat security advisory URL
-  description: String
-}
-
-"""
-Package affected by a CVE
-"""
-type AffectedPackage {
-  packageName: String!  # e.g., "openssl"
-  fixedInVersion: String  # Version with fix, null if not yet fixed
-}
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-# Example 1: Fetch basic image info
-# Variables: { "imageName": "ubi8/ubi" }
-#
-# Response:
+# Example response:
 # {
 #   "data": {
-#     "containerImage": {
-#       "_id": "abc123",
-#       "name": "ubi8/ubi",
-#       "repository": "registry.access.redhat.com/ubi8/ubi",
-#       "latestVersion": {
-#         "version": "8.10",
-#         "createdDate": "2024-10-15T12:00:00Z",
-#         "architecture": "amd64"
-#       },
-#       "vendor": "Red Hat",
-#       "lastUpdated": "2024-10-15T12:00:00Z"
-#     }
-#   }
-# }
-
-# Example 2: Fetch security data
-# Variables: { "imageId": "abc123" }
-#
-# Response:
-# {
-#   "data": {
-#     "containerImageSecurityData": {
-#       "cves": [
+#     "find_repositories": {
+#       "data": [
 #         {
-#           "cveId": "CVE-2024-1234",
-#           "severity": "Critical",
-#           "cvssScore": 9.8,
-#           "affectedPackages": [
-#             {
-#               "packageName": "openssl",
-#               "fixedInVersion": "1.1.1k-8"
-#             }
-#           ],
-#           "publishedDate": "2024-01-15T00:00:00Z",
-#           "advisoryUrl": "https://access.redhat.com/security/cve/CVE-2024-1234",
-#           "description": "Buffer overflow in OpenSSL..."
+#           "_id": "621f755a5c4460caf3124781",
+#           "registry": "registry.access.redhat.com",
+#           "repository": "advanced-cluster-security/rhacs-scanner-db-slim-rhel8"
 #         }
 #       ],
-#       "totalCveCount": 5,
-#       "criticalCount": 1,
-#       "importantCount": 2,
-#       "moderateCount": 1,
-#       "lowCount": 1
+#       "total": 1,
+#       "page": 0,
+#       "page_size": 10
 #     }
 #   }
 # }
+
+# ============================================================================
+# STEP 2: FIND ALL IMAGES FOR REPOSITORY
+# ============================================================================
+
+"""
+Find all container images for a specific repository by registry and path
+Returns image metadata, tags, creation dates, and architecture
+CRITICAL: Use _id from response for vulnerability queries, NOT docker_image_id
+"""
+query FindRepositoryImages($registry: String!, $repository: String!, $page: Int, $pageSize: Int) {
+  find_repository_images_by_registry_path(
+    registry: $registry,
+    repository: $repository,
+    page: $page,
+    page_size: $pageSize
+  ) {
+    data {
+      _id                    # CRITICAL: MongoDB ObjectID - use for vulnerability queries
+      docker_image_id        # SHA256 digest - DO NOT use for vulnerability queries
+      creation_date          # ISO 8601 timestamp
+      architecture           # e.g., "amd64", "arm64", "ppc64le", "s390x"
+
+      repositories {
+        tags {
+          name            # Tag name (e.g., "4.9.0-1", "latest")
+          added_date      # When tag was added
+        }
+      }
+
+      parsed_data {
+        labels {
+          name            # Label key (e.g., "version", "release")
+          value           # Label value
+        }
+      }
+    }
+    total
+    page
+    page_size
+  }
+}
+
+# Example variables:
+# {
+#   "registry": "registry.access.redhat.com",
+#   "repository": "advanced-cluster-security/rhacs-scanner-db-slim-rhel8",
+#   "page": 0,
+#   "pageSize": 500
+# }
+
+# Example response:
+# {
+#   "data": {
+#     "find_repository_images_by_registry_path": {
+#       "data": [
+#         {
+#           "_id": "69038da27d49e8f2af32aaf8",
+#           "docker_image_id": "sha256:521deadf...",
+#           "creation_date": "2024-10-15T12:00:00Z",
+#           "architecture": "amd64",
+#           "repositories": [
+#             {
+#               "tags": [
+#                 { "name": "4.9.0-1", "added_date": "2024-10-15T12:00:00Z" },
+#                 { "name": "latest", "added_date": "2024-10-15T12:00:00Z" }
+#               ]
+#             }
+#           ],
+#           "parsed_data": {
+#             "labels": [
+#               { "name": "version", "value": "4.9.0" },
+#               { "name": "release", "value": "1" }
+#             ]
+#           }
+#         }
+#       ],
+#       "total": 245,
+#       "page": 0,
+#       "page_size": 500
+#     }
+#   }
+# }
+
+# PAGINATION LOGIC:
+# - If data.length == page_size, there may be more results
+# - Increment page and repeat query
+# - Maximum page_size: 500
+
+# LATEST VERSION DETECTION:
+# 1. Extract all tags from repositories[0].tags[].name
+# 2. Parse as semantic versions (handle formats: "4.9.0-1", "4.9.0", "4.9")
+# 3. Sort by highest semantic version tag (NOT lexicographic!)
+# 4. For same tag, use most recent creation_date
+# 5. WARNING: parsed_data.labels may NOT contain version for newer images
+
+# ============================================================================
+# STEP 3: QUERY VULNERABILITIES FOR SPECIFIC IMAGE
+# ============================================================================
+
+"""
+Find all vulnerabilities for a specific container image by image ID
+CRITICAL: Use _id from FindRepositoryImages query, NOT docker_image_id
+"""
+query FIND_IMAGE_VULNERABILITIES($id: String, $page: Int, $pageSize: Int) {
+  ContainerImageVulnerability: find_image_vulnerabilities(
+    id: $id              # CRITICAL: Must be _id (ObjectID), NOT docker_image_id (SHA256)
+    page: $page
+    page_size: $pageSize
+  ) {
+    data {
+      _id                 # Vulnerability entry ID
+      creation_date       # When vulnerability was published
+      advisory_id         # Red Hat advisory ID (e.g., "2024:0974")
+      advisory_type       # Advisory type (e.g., "RHSA")
+      cve_id              # CVE identifier (e.g., "CVE-2024-0985")
+      severity            # Severity level: "Critical", "Important", "Moderate", "Low"
+
+      affected_packages {
+        name              # Package name (e.g., "postgresql")
+        version           # Package version (e.g., "12.9-1")
+        arch              # Architecture (e.g., "x86_64")
+        package_type      # Package type (e.g., "rpm")
+      }
+
+      packages {
+        rpm_nvra          # Full RPM package names (e.g., ["postgresql-12.9-1.el8.x86_64"])
+      }
+    }
+    total
+    page
+    page_size
+  }
+}
+
+# Example variables:
+# {
+#   "id": "69038da27d49e8f2af32aaf8",  # _id from Step 2, NOT docker_image_id
+#   "page": 0,
+#   "pageSize": 250
+# }
+
+# Example response:
+# {
+#   "data": {
+#     "ContainerImageVulnerability": {
+#       "data": [
+#         {
+#           "_id": "...",
+#           "creation_date": "2024-01-15T00:00:00Z",
+#           "advisory_id": "2024:0974",
+#           "advisory_type": "RHSA",
+#           "cve_id": "CVE-2024-0985",
+#           "severity": "Important",
+#           "affected_packages": [
+#             {
+#               "name": "postgresql",
+#               "version": "12.9-1",
+#               "arch": "x86_64",
+#               "package_type": "rpm"
+#             }
+#           ],
+#           "packages": {
+#             "rpm_nvra": ["postgresql-12.9-1.el8.x86_64"]
+#           }
+#         }
+#       ],
+#       "total": 42,
+#       "page": 0,
+#       "page_size": 250
+#     }
+#   }
+# }
+
+# PAGINATION LOGIC:
+# - Maximum recommended page_size: 250
+# - If total > page_size, increment page and repeat
+# - Continue until data.length < page_size
+
+# ============================================================================
+# ALTERNATIVE QUERIES (for advanced use cases)
+# ============================================================================
+
+"""
+Find repository by partial name match (useful for search)
+"""
+query FindRepositoriesByPartialName($searchTerm: String!) {
+  find_repositories(
+    page: 0,
+    page_size: 10,
+    filter: {
+      repository: { like: $searchTerm }
+    }
+  ) {
+    data {
+      _id
+      registry
+      repository
+    }
+    total
+  }
+}
+
+# Example variables:
+# { "searchTerm": "%postgresql%" }
+
+"""
+Find images by NVR (Name-Version-Release) - useful if you know exact NVR
+"""
+query FindImagesByNVR($nvr: String!) {
+  find_images_by_nvr(
+    nvr: $nvr,
+    page: 0,
+    page_size: 10
+  ) {
+    data {
+      _id
+      docker_image_id
+      repositories {
+        registry
+        repository
+        tags {
+          name
+        }
+      }
+    }
+    total
+  }
+}
+
+# Example variables:
+# { "nvr": "rhacs-scanner-db-slim-container-4.9.0-1" }
+
+# ============================================================================
+# TYPE DEFINITIONS (based on actual Red Hat API schema)
+# ============================================================================
+
+"""
+Container repository entity
+"""
+type ContainerRepository {
+  _id: ID!                # MongoDB ObjectID
+  registry: String!       # Registry hostname
+  repository: String!     # Repository path
+}
+
+"""
+Container image entity
+"""
+type ContainerImage {
+  _id: ID!                # MongoDB ObjectID - use for vulnerability queries
+  docker_image_id: String # SHA256 digest - DO NOT use for vulnerability queries
+  creation_date: String   # ISO 8601 timestamp
+  architecture: String    # Architecture (amd64, arm64, ppc64le, s390x)
+
+  repositories: [RepositoryInfo]
+  parsed_data: ParsedData
+}
+
+"""
+Repository information embedded in image
+"""
+type RepositoryInfo {
+  tags: [Tag]
+}
+
+"""
+Tag information
+"""
+type Tag {
+  name: String            # Tag name (e.g., "4.9.0-1", "latest")
+  added_date: String      # ISO 8601 timestamp
+}
+
+"""
+Parsed image data
+"""
+type ParsedData {
+  labels: [Label]
+}
+
+"""
+Image label (metadata)
+WARNING: May not contain version label for newer images - use tags instead
+"""
+type Label {
+  name: String            # Label key
+  value: String           # Label value
+}
+
+"""
+Vulnerability entry for container image
+"""
+type ContainerImageVulnerability {
+  _id: ID!                # Vulnerability entry ID
+  creation_date: String   # ISO 8601 timestamp
+  advisory_id: String     # Red Hat advisory ID
+  advisory_type: String   # Advisory type (RHSA, RHBA, etc.)
+  cve_id: String!         # CVE identifier (CVE-YYYY-NNNNN)
+  severity: String!       # Critical | Important | Moderate | Low
+
+  affected_packages: [AffectedPackage]
+  packages: PackageInfo
+}
+
+"""
+Package affected by vulnerability
+"""
+type AffectedPackage {
+  name: String            # Package name
+  version: String         # Package version
+  arch: String            # Architecture
+  package_type: String    # Package type (rpm, etc.)
+}
+
+"""
+Package information
+"""
+type PackageInfo {
+  rpm_nvra: [String]      # Full RPM package names
+}
 
 # ============================================================================
 # ERROR HANDLING
 # ============================================================================
 
-# Error Case 1: Image not found
+# Error Case 1: Repository not found
+# Response:
+# {
+#   "data": {
+#     "find_repositories": {
+#       "data": [],
+#       "total": 0
+#     }
+#   }
+# }
+
+# Error Case 2: Invalid image ID for vulnerability query
 # Response:
 # {
 #   "errors": [
 #     {
-#       "message": "Container image not found",
+#       "message": "Image not found",
 #       "extensions": {
 #         "code": "NOT_FOUND"
 #       }
@@ -225,21 +410,7 @@ type AffectedPackage {
 #   "data": null
 # }
 
-# Error Case 2: Invalid image name
-# Response:
-# {
-#   "errors": [
-#     {
-#       "message": "Invalid image name format",
-#       "extensions": {
-#         "code": "BAD_USER_INPUT"
-#       }
-#     }
-#   ],
-#   "data": null
-# }
-
-# Error Case 3: Rate limit exceeded
+# Error Case 3: Rate limit exceeded (429)
 # HTTP Status: 429 Too Many Requests
 # Response:
 # {
@@ -255,29 +426,78 @@ type AffectedPackage {
 # }
 
 # ============================================================================
-# CONTRACT REQUIREMENTS FOR INTEGRATION TESTS
+# INTEGRATION TEST CONTRACT REQUIREMENTS
 # ============================================================================
 
 # Integration tests MUST validate:
 # 1. Query structure matches this schema exactly
 # 2. Response contains all required fields (marked with !)
-# 3. Response types match expected types (String, Int, Float, etc.)
+# 3. Response types match expected types (String, Int, etc.)
 # 4. CVE IDs match pattern: CVE-\d{4}-\d{4,}
 # 5. Severity values are: "Critical", "Important", "Moderate", or "Low"
 # 6. Date strings are valid ISO 8601 format
-# 7. CVSS scores are in range [0.0, 10.0] when present
-# 8. Advisory URLs are valid HTTPS URLs
+# 7. _id fields are MongoDB ObjectIDs (24-character hex)
+# 8. docker_image_id is SHA256 digest (sha256: prefix)
 # 9. Error responses include 'errors' array with 'message' and 'extensions.code'
-# 10. Rate limit errors include 'retryAfter' value
+# 10. Pagination: total field matches actual data count
+# 11. Tags array is non-empty for published images
+# 12. Advisory URLs can be constructed: https://access.redhat.com/security/cve/{cve_id}
 
 # ============================================================================
-# RATE LIMITING & BEST PRACTICES
+# CACHING & PERFORMANCE RECOMMENDATIONS
 # ============================================================================
 
-# - No documented rate limits, but implement exponential backoff for 429 responses
-# - Batch image queries when possible (use combined query)
-# - Cache responses for 24 hours (CVE data doesn't change frequently)
-# - Use conditional requests with If-Modified-Since header (if supported)
-# - Implement circuit breaker: stop querying after 3 consecutive failures
-# - Timeout: Set 5-second timeout for GraphQL queries
-# - Retry policy: Max 3 retries with exponential backoff (1s, 2s, 4s)
+# 1. Cache repository metadata (changes infrequently) - TTL: 7 days
+# 2. Cache image lists per repository - TTL: 1 hour
+# 3. Cache vulnerability data per image _id - TTL: 24 hours
+# 4. Implement conditional caching: re-fetch if creation_date changes
+# 5. Batch queries: fetch all images in single query (page_size: 500)
+# 6. Use connection pooling for HTTP requests
+# 7. Implement circuit breaker: stop querying after 3 consecutive failures
+# 8. Retry policy: max 3 retries with exponential backoff (1s, 2s, 4s)
+# 9. Timeout: 5 seconds per GraphQL query
+# 10. Log slow queries (>2 seconds) for monitoring
+
+# ============================================================================
+# RATE LIMITING STRATEGY
+# ============================================================================
+
+# - No official rate limits documented by Red Hat
+# - Implement client-side rate limiting: max 10 requests/second
+# - Use exponential backoff on any error response
+# - Monitor for 429 status codes and respect retry-after headers
+# - Implement request queuing to prevent burst traffic
+
+# ============================================================================
+# COMMON PITFALLS (from official documentation)
+# ============================================================================
+
+# ❌ WRONG: Using docker_image_id for vulnerability queries
+# find_image_vulnerabilities(id: "sha256:521deadf...")
+
+# ✅ CORRECT: Using _id (ObjectID) for vulnerability queries
+# find_image_vulnerabilities(id: "69038da27d49e8f2af32aaf8")
+
+# ❌ WRONG: Relying on parsed_data.labels for version
+# Some images don't have version labels
+
+# ✅ CORRECT: Using repositories[].tags[] for version detection
+# Always use tags as source of truth
+
+# ❌ WRONG: String sorting for versions
+# "4.9.0" < "4.100.0" (lexicographic)
+
+# ✅ CORRECT: Semantic version sorting
+# Use semver library or sort -V
+
+# ❌ WRONG: Ignoring pagination
+# Only fetching first page of results
+
+# ✅ CORRECT: Loop through all pages
+# Check if data.length == page_size, increment page
+
+# ❌ WRONG: Ignoring multi-architecture
+# Assuming one tag = one image
+
+# ✅ CORRECT: Filter by architecture if platform-specific
+# Check architecture field for amd64, arm64, etc.
