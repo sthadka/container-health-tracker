@@ -14,9 +14,17 @@ export enum ConfigKey {
   API_ENDPOINT = 'API_ENDPOINT',
   EMAIL_RECIPIENTS = 'EMAIL_RECIPIENTS',
   SLACK_WEBHOOK_URL = 'SLACK_WEBHOOK_URL',
+  SLACK_MENTION_USERS = 'SLACK_MENTION_USERS',
   NOTIFICATION_ENABLED = 'NOTIFICATION_ENABLED',
+  ENABLE_EMAIL = 'ENABLE_EMAIL',
+  ENABLE_SLACK = 'ENABLE_SLACK',
+  SEVERITY_THRESHOLD = 'SEVERITY_THRESHOLD',
+  NOTIFY_ONLY_ON_STATUS_CHANGE = 'NOTIFY_ONLY_ON_STATUS_CHANGE',
+  INCLUDE_DETAILED_PACKAGE_LIST = 'INCLUDE_DETAILED_PACKAGE_LIST',
   LOG_LEVEL = 'LOG_LEVEL'
 }
+
+import { Severity } from '../models/types';
 
 /**
  * Configuration interface
@@ -26,7 +34,13 @@ export interface AppConfig {
   apiEndpoint: string;
   emailRecipients: string[];
   slackWebhookUrl?: string;
+  slackMentionUsers: string[];
   notificationEnabled: boolean;
+  enableEmail: boolean;
+  enableSlack: boolean;
+  severityThreshold: Severity;
+  notifyOnlyOnStatusChange: boolean;
+  includeDetailedPackageList: boolean;
   logLevel: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 }
 
@@ -36,7 +50,13 @@ export interface AppConfig {
 const DEFAULTS: Partial<AppConfig> = {
   apiEndpoint: 'https://catalog.redhat.com/api/containers/graphql/',
   notificationEnabled: true,
-  logLevel: 'INFO'
+  enableEmail: true,
+  enableSlack: false,
+  severityThreshold: Severity.IMPORTANT,
+  notifyOnlyOnStatusChange: true,
+  includeDetailedPackageList: false,
+  logLevel: 'INFO',
+  slackMentionUsers: []
 };
 
 /**
@@ -71,7 +91,13 @@ export class ConfigService {
       apiEndpoint: this.properties.getProperty(ConfigKey.API_ENDPOINT) || DEFAULTS.apiEndpoint!,
       emailRecipients: this.parseEmailRecipients(),
       slackWebhookUrl: this.properties.getProperty(ConfigKey.SLACK_WEBHOOK_URL) || undefined,
+      slackMentionUsers: this.parseSlackMentionUsers(),
       notificationEnabled: this.parseBoolean(ConfigKey.NOTIFICATION_ENABLED, DEFAULTS.notificationEnabled!),
+      enableEmail: this.parseBoolean(ConfigKey.ENABLE_EMAIL, DEFAULTS.enableEmail!),
+      enableSlack: this.parseBoolean(ConfigKey.ENABLE_SLACK, DEFAULTS.enableSlack!),
+      severityThreshold: this.parseSeverityThreshold(),
+      notifyOnlyOnStatusChange: this.parseBoolean(ConfigKey.NOTIFY_ONLY_ON_STATUS_CHANGE, DEFAULTS.notifyOnlyOnStatusChange!),
+      includeDetailedPackageList: this.parseBoolean(ConfigKey.INCLUDE_DETAILED_PACKAGE_LIST, DEFAULTS.includeDetailedPackageList!),
       logLevel: this.parseLogLevel()
     };
   }
@@ -116,6 +142,38 @@ export class ConfigService {
   }
 
   /**
+   * Parse Slack mention users from comma-separated string
+   */
+  private parseSlackMentionUsers(): string[] {
+    const users = this.properties.getProperty(ConfigKey.SLACK_MENTION_USERS);
+    if (!users) {
+      return DEFAULTS.slackMentionUsers!;
+    }
+    return users.split(',').map(user => user.trim()).filter(user => user.length > 0);
+  }
+
+  /**
+   * Parse severity threshold with validation
+   */
+  private parseSeverityThreshold(): Severity {
+    const threshold = this.properties.getProperty(ConfigKey.SEVERITY_THRESHOLD);
+    if (!threshold) {
+      return DEFAULTS.severityThreshold!;
+    }
+
+    const validSeverities: Severity[] = [
+      Severity.CRITICAL,
+      Severity.IMPORTANT,
+      Severity.MODERATE,
+      Severity.LOW,
+      Severity.NONE
+    ];
+
+    const matchedSeverity = validSeverities.find(s => s === threshold);
+    return matchedSeverity || DEFAULTS.severityThreshold!;
+  }
+
+  /**
    * Parse boolean property with default value
    */
   private parseBoolean(key: ConfigKey, defaultValue: boolean): boolean {
@@ -153,12 +211,17 @@ export function initializeProperties(spreadsheetId: string): void {
   properties.setProperties({
     [ConfigKey.SPREADSHEET_ID]: spreadsheetId,
     [ConfigKey.API_ENDPOINT]: DEFAULTS.apiEndpoint!,
-    [ConfigKey.NOTIFICATION_ENABLED]: 'true',
+    [ConfigKey.NOTIFICATION_ENABLED]: String(DEFAULTS.notificationEnabled),
+    [ConfigKey.ENABLE_EMAIL]: String(DEFAULTS.enableEmail),
+    [ConfigKey.ENABLE_SLACK]: String(DEFAULTS.enableSlack),
+    [ConfigKey.SEVERITY_THRESHOLD]: DEFAULTS.severityThreshold!,
+    [ConfigKey.NOTIFY_ONLY_ON_STATUS_CHANGE]: String(DEFAULTS.notifyOnlyOnStatusChange),
+    [ConfigKey.INCLUDE_DETAILED_PACKAGE_LIST]: String(DEFAULTS.includeDetailedPackageList),
     [ConfigKey.LOG_LEVEL]: DEFAULTS.logLevel!,
-    // EMAIL_RECIPIENTS and SLACK_WEBHOOK_URL set manually by user
+    // EMAIL_RECIPIENTS, SLACK_WEBHOOK_URL, and SLACK_MENTION_USERS set manually by user
   });
 
   Logger.log('Apps Script Properties initialized successfully');
   Logger.log('SPREADSHEET_ID: ' + spreadsheetId);
-  Logger.log('Please set EMAIL_RECIPIENTS and SLACK_WEBHOOK_URL manually via Script Properties');
+  Logger.log('Please set EMAIL_RECIPIENTS and optionally SLACK_WEBHOOK_URL and SLACK_MENTION_USERS via Script Properties');
 }
