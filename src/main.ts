@@ -9,6 +9,7 @@ import { ConfigService } from './config/ConfigService';
 import { CatalogService } from './services/CatalogService';
 import { SheetsRepository } from './services/SheetsRepository';
 import { MonitoringOrchestrator } from './services/MonitoringOrchestrator';
+import { NotificationService } from './services/NotificationService';
 
 /**
  * Main monitoring function - Entry point for scheduled runs
@@ -37,11 +38,27 @@ export function runMonitoring(): void {
     const catalogService = new CatalogService(apiEndpoint);
     const sheetsRepo = new SheetsRepository(spreadsheetId);
 
+    // Initialize notification service (optional)
+    let notificationService: NotificationService | undefined;
+    if (config.get('notificationEnabled')) {
+      notificationService = new NotificationService({
+        enableEmail: config.get('enableEmail'),
+        enableSlack: config.get('enableSlack'),
+        emailRecipients: config.get('emailRecipients'),
+        slackWebhookUrl: config.get('slackWebhookUrl'),
+        slackMentionUsers: config.get('slackMentionUsers'),
+        severityThreshold: config.get('severityThreshold'),
+        notifyOnlyOnStatusChange: config.get('notifyOnlyOnStatusChange'),
+        includeDetailedPackageList: config.get('includeDetailedPackageList')
+      });
+      Logger.log('✓ Notification service initialized');
+    }
+
     // Validate spreadsheet structure
     sheetsRepo.validateStructure();
 
     // Execute monitoring run
-    const orchestrator = new MonitoringOrchestrator(config, catalogService, sheetsRepo);
+    const orchestrator = new MonitoringOrchestrator(config, catalogService, sheetsRepo, notificationService);
     const monitoringRun = orchestrator.execute();
 
     // Log summary
@@ -52,6 +69,7 @@ export function runMonitoring(): void {
     Logger.log(`Successful: ${monitoringRun.imagesSuccessful}`);
     Logger.log(`Failed: ${monitoringRun.imagesFailed}`);
     Logger.log(`Total CVEs Found: ${monitoringRun.totalCvesDiscovered}`);
+    Logger.log(`Notifications Sent: ${monitoringRun.notificationsSent}`);
     Logger.log(`Duration: ${Math.round((monitoringRun.durationMs || 0) / 1000)}s`);
 
     if (monitoringRun.errors.length > 0) {
@@ -139,9 +157,31 @@ export function testMonitoring(): void {
       }
     }
 
+    // Initialize notification service (optional)
+    Logger.log('Initializing notification service...');
+    let notificationService: NotificationService | undefined;
+    if (config.get('notificationEnabled')) {
+      notificationService = new NotificationService({
+        enableEmail: config.get('enableEmail'),
+        enableSlack: config.get('enableSlack'),
+        emailRecipients: config.get('emailRecipients'),
+        slackWebhookUrl: config.get('slackWebhookUrl'),
+        slackMentionUsers: config.get('slackMentionUsers'),
+        severityThreshold: config.get('severityThreshold'),
+        notifyOnlyOnStatusChange: config.get('notifyOnlyOnStatusChange'),
+        includeDetailedPackageList: config.get('includeDetailedPackageList')
+      });
+      Logger.log('✓ Notification service initialized');
+      Logger.log(`  Email enabled: ${config.get('enableEmail')}`);
+      Logger.log(`  Slack enabled: ${config.get('enableSlack')}`);
+      Logger.log(`  Severity threshold: ${config.get('severityThreshold')}`);
+    } else {
+      Logger.log('⚠ Notifications disabled');
+    }
+
     // Execute full monitoring run
     Logger.log('Executing full monitoring run...');
-    const orchestrator = new MonitoringOrchestrator(config, catalogService, sheetsRepo);
+    const orchestrator = new MonitoringOrchestrator(config, catalogService, sheetsRepo, notificationService);
     const monitoringRun = orchestrator.execute();
 
     // Log detailed summary
@@ -153,6 +193,8 @@ export function testMonitoring(): void {
     Logger.log(`  - Failed: ${monitoringRun.imagesFailed}`);
     Logger.log(`  - Skipped: ${monitoringRun.imagesSkipped}`);
     Logger.log(`CVEs Discovered: ${monitoringRun.totalCvesDiscovered}`);
+    Logger.log(`Notifications Sent: ${monitoringRun.notificationsSent}`);
+    Logger.log(`Notifications Failed: ${monitoringRun.notificationsFailed}`);
     Logger.log(`Duration: ${Math.round((monitoringRun.durationMs || 0) / 1000)}s`);
 
     if (monitoringRun.errors.length > 0) {
@@ -205,6 +247,11 @@ export function setupProperties(spreadsheetId?: string): void {
     'SPREADSHEET_ID': spreadsheetId,
     'API_ENDPOINT': 'https://catalog.redhat.com/api/containers/graphql/',
     'NOTIFICATION_ENABLED': 'true',
+    'ENABLE_EMAIL': 'true',
+    'ENABLE_SLACK': 'false',
+    'SEVERITY_THRESHOLD': 'Important',
+    'NOTIFY_ONLY_ON_STATUS_CHANGE': 'true',
+    'INCLUDE_DETAILED_PACKAGE_LIST': 'false',
     'LOG_LEVEL': 'INFO'
   });
 
@@ -212,6 +259,12 @@ export function setupProperties(spreadsheetId?: string): void {
   Logger.log(`SPREADSHEET_ID: ${spreadsheetId}`);
   Logger.log('\nNext steps:');
   Logger.log('1. Go to Project Settings > Script Properties');
-  Logger.log('2. Add EMAIL_RECIPIENTS (comma-separated emails)');
-  Logger.log('3. Add SLACK_WEBHOOK_URL (optional)');
+  Logger.log('2. Add EMAIL_RECIPIENTS (comma-separated emails for notifications)');
+  Logger.log('3. Optionally add SLACK_WEBHOOK_URL (for Slack notifications)');
+  Logger.log('4. Optionally add SLACK_MENTION_USERS (comma-separated Slack user IDs)');
+  Logger.log('\nNotification settings:');
+  Logger.log('- Email notifications: enabled');
+  Logger.log('- Slack notifications: disabled');
+  Logger.log('- Severity threshold: Important (only Critical and Important CVEs trigger notifications)');
+  Logger.log('- Notify only on status change: yes');
 }
