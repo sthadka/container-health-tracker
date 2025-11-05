@@ -9,9 +9,11 @@
 import { ConfigService } from '../config/ConfigService';
 import { CatalogService } from './CatalogService';
 import { SheetsRepository } from './SheetsRepository';
+import { NotificationService } from './NotificationService';
 import { calculateHealthIndex } from './HealthCalculator';
 import { MonitoringRun } from '../models/MonitoringRun';
-import { HealthStatus } from '../models/types';
+import { NotificationEvent } from '../models/NotificationEvent';
+import { HealthStatus, DeliveryStatus, NotificationChannel } from '../models/types';
 
 /**
  * Result of processing a single image
@@ -32,17 +34,21 @@ export class MonitoringOrchestrator {
   private config: ConfigService;
   private catalogService: CatalogService;
   private sheetsRepo: SheetsRepository;
+  private notificationService?: NotificationService;
   private runId: string;
   private errors: Array<{ imageId?: string; errorType: string; errorMessage: string; timestamp: Date }> = [];
+  private notificationEvents: NotificationEvent[] = [];
 
   constructor(
     config: ConfigService,
     catalogService: CatalogService,
-    sheetsRepo: SheetsRepository
+    sheetsRepo: SheetsRepository,
+    notificationService?: NotificationService
   ) {
     this.config = config;
     this.catalogService = catalogService;
     this.sheetsRepo = sheetsRepo;
+    this.notificationService = notificationService;
     this.runId = Utilities.getUuid();
   }
 
@@ -110,6 +116,25 @@ export class MonitoringOrchestrator {
           const errorMsg = error instanceof Error ? error.message : String(error);
           this.logError(configRow.imageName, 'PROCESSING_ERROR', errorMsg);
           this.log('ERROR', 'ORCHESTRATOR', `✗ ${configRow.imageName}: ${errorMsg}`);
+        }
+      }
+
+      // Send notifications for health status changes
+      if (this.notificationService && this.notificationEvents.length > 0) {
+        this.log('INFO', 'ORCHESTRATOR', `Sending ${this.notificationEvents.length} notification(s)`);
+
+        for (const event of this.notificationEvents) {
+          try {
+            const result = this.notificationService.send(event);
+            if (result.deliveryStatus === DeliveryStatus.SUCCESS) {
+              monitoringRun.notificationsSent++;
+            } else if (result.deliveryStatus === DeliveryStatus.FAILED) {
+              monitoringRun.notificationsFailed++;
+            }
+          } catch (error) {
+            monitoringRun.notificationsFailed++;
+            this.log('ERROR', 'NOTIFICATION', `Failed to send notification: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
       }
 
@@ -216,7 +241,45 @@ export class MonitoringOrchestrator {
         `Critical: ${healthIndex.criticalCves}, Important: ${healthIndex.importantCves}`
       );
 
-      // Step 5: Write CVE data to Sheets
+      // Step 5: Detect health status changes
+      const previousHealth = this.sheetsRepo.getPreviousHealthStatus(imageName);
+      const previousStatus = previousHealth?.status || HealthStatus.UNKNOWN;
+      const previousScore = previousHealth?.score || 0;
+      const statusChanged = previousStatus !== healthIndex.status;
+
+      this.log('DEBUG', 'PROCESS_IMAGE',
+        `Status change: ${previousStatus} (${previousScore}) → ${healthIndex.status} (${healthIndex.score})`
+      );
+
+      // Step 6: Create notification event if status changed
+      if (statusChanged && this.notificationService) {
+        this.log('INFO', 'PROCESS_IMAGE', `Health status changed - creating notification event`);
+
+        const notificationEvent: NotificationEvent = {
+          eventId: `${this.runId}-${imageName}-${Date.now()}`,
+          monitoringRunId: this.runId,
+          imageId: latestImage.imageId,
+          registry,
+          repository: imageName,
+          imageVersion: latestImage.version,
+          previousStatus,
+          currentStatus: healthIndex.status,
+          previousScore,
+          currentScore: healthIndex.score,
+          criticalCveCount: healthIndex.criticalCves,
+          importantCveCount: healthIndex.importantCves,
+          affectedCves: cveRecords.map(cve => cve.cveId),
+          affectedPackages: Array.from(new Set(cveRecords.flatMap(cve => cve.affectedPackages))),
+          channels: [],
+          deliveryStatus: DeliveryStatus.PENDING,
+          deliveryAttempts: 0,
+          triggeredAt: new Date()
+        };
+
+        this.notificationEvents.push(notificationEvent);
+      }
+
+      // Step 7: Write CVE data to Sheets
       this.log('DEBUG', 'PROCESS_IMAGE', `Writing CVE data to Sheets`);
       this.sheetsRepo.writeCVEData(
         imageName,
@@ -226,7 +289,11 @@ export class MonitoringOrchestrator {
         healthIndex.status
       );
 
-      // Step 6: Write historical snapshot
+      // Step 8: Write historical snapshot
+      const statusChangeDescription = statusChanged
+        ? `${previousStatus} → ${healthIndex.status}`
+        : 'No change';
+
       this.sheetsRepo.appendHistoricalSnapshot({
         timestamp: new Date(),
         imageName: imageName,
@@ -238,7 +305,7 @@ export class MonitoringOrchestrator {
         lowCount: healthIndex.lowCves,
         healthIndex: healthIndex.score,
         healthStatus: healthIndex.status,
-        statusChange: 'No change' // TODO: Implement change detection in Phase 3
+        statusChange: statusChangeDescription
       });
 
       return {
