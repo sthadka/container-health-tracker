@@ -252,7 +252,7 @@ export class MonitoringOrchestrator {
     architecture: string,
     stream: string = 'latest'
   ): ImageProcessingResult {
-    this.log('INFO', 'PROCESS_IMAGE', `Processing ${registry}/${imageName} (${architecture}, stream: ${stream})`);
+    this.log('INFO', 'PROCESS_IMAGE', `Processing ${imageName} (${architecture}, ${stream})`);
 
     try {
       // Step 1: Find repository
@@ -292,7 +292,7 @@ export class MonitoringOrchestrator {
         throw new Error(`No images found for ${registry}/${imageName} (${architecture}, stream: ${stream})`);
       }
 
-      this.log('INFO', 'PROCESS_IMAGE', `Latest version: ${latestImage.version} (${latestImage.imageId})`);
+      this.log('INFO', 'PROCESS_IMAGE', `Latest version: ${latestImage.version}`);
 
       // Step 3: Fetch vulnerabilities
       this.log('DEBUG', 'PROCESS_IMAGE', `Fetching vulnerabilities for image ${latestImage.imageId}`);
@@ -324,14 +324,15 @@ export class MonitoringOrchestrator {
       const previousScore = previousHealth?.score || 0;
       const statusChanged = previousStatus !== healthIndex.status;
 
-      this.log('DEBUG', 'PROCESS_IMAGE',
-        `Status change: ${previousStatus} (${previousScore}) → ${healthIndex.status} (${healthIndex.score})`
-      );
+      // Only log status changes when they actually occur
+      if (statusChanged) {
+        this.log('INFO', 'PROCESS_IMAGE',
+          `Status changed: ${previousStatus} → ${healthIndex.status}`
+        );
+      }
 
       // Step 6: Create notification event if status changed
       if (statusChanged && this.notificationService) {
-        this.log('INFO', 'PROCESS_IMAGE', `Health status changed - creating notification event`);
-
         const notificationEvent: NotificationEvent = {
           eventId: `${this.runId}-${imageName}-${Date.now()}`,
           monitoringRunId: this.runId,
@@ -419,6 +420,11 @@ export class MonitoringOrchestrator {
    * @param message - Log message
    */
   private log(level: string, component: string, message: string): void {
+    // Skip DEBUG logs to reduce noise in Apps Script execution logs
+    if (level === 'DEBUG') {
+      return;
+    }
+
     const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
     const logMessage = `[${timestamp}] [${level}] [${component}] ${message}`;
     Logger.log(logMessage);
