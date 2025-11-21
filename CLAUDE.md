@@ -240,6 +240,70 @@ git push origin feature/your-feature
 - `validate-contract.ts` ensures queries match API schema
 - Prevents deployment of invalid queries
 
+## Google Sheets Schema
+
+**Config Tab:**
+- Column A: Image Name (e.g., "ubi8/ubi", "rhacs-main-rhel8")
+- Column B: Enabled (TRUE/FALSE)
+- Column C: Severity Threshold (Critical/Important/Moderate/Low)
+- Column D: Notes (optional text)
+- Column E: Stream (comma-separated, e.g., "4.7,4.8,4.9" or "8,9" or "latest")
+- Column F: Architecture (comma-separated, e.g., "amd64,arm64,ppc64le,s390x")
+
+**CVE Data Tab:**
+- Column A: Image Name
+- Column B: Architecture (e.g., "amd64", "arm64")
+- Column C: Stream (e.g., "8", "4.7", "latest")
+- Column D: Version
+- Column E: CVE ID
+- Column F: Severity
+- Column G: CVSS Score (not available from API)
+- Column H: Affected Packages
+- Column I: Discovery Date
+- Column J: Published Date
+- Column K: Advisory URL
+- Column L: Health Index
+- Column M: Health Status
+- Column N: Last Updated
+
+**Historical Tab:**
+- Column A: Timestamp
+- Column B: Image Name
+- Column C: Architecture
+- Column D: Stream
+- Column E: Version
+- Column F: Total CVEs
+- Column G: Critical Count
+- Column H: Important Count
+- Column I: Moderate Count
+- Column J: Low Count
+- Column K: Health Index
+- Column L: Health Status
+- Column M: Status Change
+
+**Stream Patterns:**
+- `latest`: Tracks absolute latest version (no filtering)
+- `8`: Tracks latest 8.x version (e.g., 8.10, 8.10-1028)
+- `4.7`: Tracks latest 4.7.x version (e.g., 4.7.5, 4.7.5-123)
+- Multiple streams: `4.7,4.8,4.9` tracks all three independently
+
+**Architecture Support:**
+- `amd64`: x86-64 architecture (default)
+- `arm64`: ARM 64-bit architecture
+- `ppc64le`: PowerPC 64-bit Little Endian
+- `s390x`: IBM Z architecture
+- Multiple architectures: `amd64,arm64` tracks both independently
+
+**Example Config Row:**
+```
+ubi8/ubi | TRUE | Important | Production images | 8,9 | amd64,arm64
+```
+This would track 4 combinations:
+- ubi8/ubi (amd64, stream 8)
+- ubi8/ubi (amd64, stream 9)
+- ubi8/ubi (arm64, stream 8)
+- ubi8/ubi (arm64, stream 9)
+
 ## Configuration Management
 
 All runtime configuration stored in Apps Script Properties:
@@ -281,6 +345,15 @@ const spreadsheetId = config.get('spreadsheetId');
 3. Update documentation in README.md and spec.md
 
 ## Recent Changes
+
+**2025-11-21:**
+- Added multi-stream and multi-architecture support
+- Config tab now accepts comma-separated streams (Column E) and architectures (Column F)
+- Each image tracks multiple stream×arch combinations independently
+- CVE Data and Historical tabs updated with Architecture and Stream columns
+- Added `findLatestImageInStream()` method for stream-specific version detection
+- Error entries created when stream/arch combinations not found in registry
+- Health status tracked per combination (e.g., ubi8-amd64-8, ubi8-arm64-9)
 
 **2025-11-05:**
 - Completed MVP implementation (Phases 1-2)

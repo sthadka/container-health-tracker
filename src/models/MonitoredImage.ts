@@ -12,7 +12,8 @@ export interface MonitoredImage {
   // Image identification (from Config sheet)
   registry: string;                    // e.g., "registry.access.redhat.com"
   repository: string;                  // e.g., "ubi8/ubi"
-  architecture: string;                // e.g., "amd64", "arm64"
+  architecture: string;                // e.g., "amd64", "arm64", "ppc64le", "s390x"
+  stream?: string;                     // Content stream/version pattern (e.g., "8", "4.7", "latest")
 
   // Red Hat API identifiers (populated during monitoring)
   repositoryId: string;                // MongoDB ObjectID from find_repositories

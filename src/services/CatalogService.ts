@@ -48,6 +48,70 @@ export class CatalogService {
   }
 
   /**
+   * Find latest image in a specific content stream
+   * Queries all images for registry/repository, filters by architecture and stream pattern,
+   * and selects the highest semantic version within that stream
+   *
+   * @param registry - Registry hostname (e.g., "registry.access.redhat.com")
+   * @param repository - Repository path (e.g., "ubi8/ubi")
+   * @param architecture - Architecture filter (e.g., "amd64")
+   * @param stream - Content stream pattern (e.g., "8", "4.7", "latest")
+   * @returns Latest image metadata for the stream, or null if no matching images found
+   */
+  public findLatestImageInStream(
+    registry: string,
+    repository: string,
+    architecture: string = 'amd64',
+    stream: string = 'latest'
+  ): CatalogImage | null {
+    const images = this.client.findRepositoryImages(registry, repository, architecture);
+
+    if (images.length === 0) {
+      return null;
+    }
+
+    // Extract all tags from all images
+    const imageWithTags: Array<{ image: typeof images[0]; tag: string }> = [];
+
+    for (const image of images) {
+      if (!image.repositories || image.repositories.length === 0) {
+        continue;
+      }
+
+      for (const repo of image.repositories) {
+        if (!repo.tags || repo.tags.length === 0) {
+          continue;
+        }
+
+        for (const tag of repo.tags) {
+          if (tag.name && tag.name !== 'latest') {
+            // Apply stream filter
+            if (this.matchesStream(tag.name, stream)) {
+              imageWithTags.push({ image, tag: tag.name });
+            }
+          }
+        }
+      }
+    }
+
+    if (imageWithTags.length === 0) {
+      return null;
+    }
+
+    // Sort by semantic version (highest first)
+    imageWithTags.sort((a, b) => this.compareVersions(b.tag, a.tag));
+
+    const latest = imageWithTags[0];
+
+    return {
+      imageId: latest.image._id,
+      dockerImageId: latest.image.docker_image_id,
+      version: latest.tag,
+      architecture: latest.image.architecture
+    };
+  }
+
+  /**
    * Find latest image by semantic version parsing
    * Queries all images for registry/repository, filters by architecture,
    * and selects the highest semantic version
@@ -139,6 +203,36 @@ export class CatalogService {
       discoveredAt: new Date(),
       isActive: true
     }));
+  }
+
+  /**
+   * Check if a version tag matches a stream pattern
+   *
+   * Stream patterns:
+   * - "latest": matches all versions (no filtering)
+   * - "8": matches "8.*" (e.g., "8.10", "8.10-1028", "8.5")
+   * - "4.7": matches "4.7.*" (e.g., "4.7.0", "4.7.5-123")
+   * - "9.0": matches "9.0.*" (e.g., "9.0.1", "9.0.5-789")
+   *
+   * @param tag - Version tag to check
+   * @param stream - Stream pattern to match against
+   * @returns true if tag matches the stream pattern
+   */
+  private matchesStream(tag: string, stream: string): boolean {
+    // "latest" stream matches all versions
+    if (stream === 'latest' || !stream) {
+      return true;
+    }
+
+    // Normalize tag: remove 'v' prefix if present
+    const normalizedTag = tag.toLowerCase().replace(/^v/, '');
+
+    // Stream pattern: "8" matches "8.*", "4.7" matches "4.7.*"
+    // Tag format examples: "8.10", "8.10-1028", "4.7.0", "4.7.5-123"
+    const streamPattern = `^${stream.replace(/\./g, '\\.')}\\.`;
+    const regex = new RegExp(streamPattern);
+
+    return regex.test(normalizedTag);
   }
 
   /**

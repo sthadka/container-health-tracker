@@ -90,32 +90,58 @@ export class MonitoringOrchestrator {
       const configRows = this.sheetsRepo.readConfig();
       this.log('INFO', 'ORCHESTRATOR', `Found ${configRows.length} enabled images to monitor`);
 
-      // Process each image
+      // Process each image (with stream×architecture combinations)
       for (const configRow of configRows) {
-        monitoringRun.imagesProcessed++;
+        // Generate all stream×architecture combinations for this image
+        const combinations = this.generateCombinations(
+          configRow.imageName,
+          configRow.streams,
+          configRow.architectures
+        );
 
-        try {
-          const result = this.processImage(
-            configRow.imageName,
-            'registry.access.redhat.com', // Default registry
-            'amd64' // Default architecture
-          );
+        this.log('INFO', 'ORCHESTRATOR',
+          `Processing ${configRow.imageName}: ${combinations.length} combination(s) ` +
+          `(${configRow.streams.length} stream(s) × ${configRow.architectures.length} arch(s))`
+        );
 
-          if (result.success) {
-            monitoringRun.imagesSuccessful++;
-            monitoringRun.totalCvesDiscovered += result.cveCount;
-            this.log('INFO', 'ORCHESTRATOR',
-              `✓ ${result.imageName}: ${result.cveCount} CVEs, Health: ${result.healthIndex} (${result.healthStatus})`
+        // Process each combination
+        for (const combo of combinations) {
+          monitoringRun.imagesProcessed++;
+
+          try {
+            const result = this.processImage(
+              combo.imageName,
+              'registry.access.redhat.com', // Default registry
+              combo.architecture,
+              combo.stream
             );
-          } else {
+
+            if (result.success) {
+              monitoringRun.imagesSuccessful++;
+              monitoringRun.totalCvesDiscovered += result.cveCount;
+              this.log('INFO', 'ORCHESTRATOR',
+                `✓ ${result.imageName} (${combo.architecture}, ${combo.stream}): ${result.cveCount} CVEs, Health: ${result.healthIndex} (${result.healthStatus})`
+              );
+            } else {
+              monitoringRun.imagesFailed++;
+              this.logError(
+                `${result.imageName}:${combo.architecture}:${combo.stream}`,
+                'PROCESSING_ERROR',
+                result.error || 'Unknown error'
+              );
+            }
+          } catch (error) {
             monitoringRun.imagesFailed++;
-            this.logError(result.imageName, 'PROCESSING_ERROR', result.error || 'Unknown error');
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            this.logError(
+              `${configRow.imageName}:${combo.architecture}:${combo.stream}`,
+              'PROCESSING_ERROR',
+              errorMsg
+            );
+            this.log('ERROR', 'ORCHESTRATOR',
+              `✗ ${configRow.imageName} (${combo.architecture}, ${combo.stream}): ${errorMsg}`
+            );
           }
-        } catch (error) {
-          monitoringRun.imagesFailed++;
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          this.logError(configRow.imageName, 'PROCESSING_ERROR', errorMsg);
-          this.log('ERROR', 'ORCHESTRATOR', `✗ ${configRow.imageName}: ${errorMsg}`);
         }
       }
 
@@ -187,32 +213,83 @@ export class MonitoringOrchestrator {
   }
 
   /**
-   * Process a single container image
+   * Generate all stream×architecture combinations for an image
+   *
+   * @param imageName - Repository path
+   * @param streams - Array of stream patterns (e.g., ["4.7", "4.8", "4.9"])
+   * @param architectures - Array of architectures (e.g., ["amd64", "arm64"])
+   * @returns Array of combinations to process
+   */
+  private generateCombinations(
+    imageName: string,
+    streams: string[],
+    architectures: string[]
+  ): Array<{ imageName: string; stream: string; architecture: string }> {
+    const combinations: Array<{ imageName: string; stream: string; architecture: string }> = [];
+
+    for (const stream of streams) {
+      for (const architecture of architectures) {
+        combinations.push({ imageName, stream, architecture });
+      }
+    }
+
+    return combinations;
+  }
+
+  /**
+   * Process a single container image (for a specific stream+architecture combination)
    * Fetches latest version, queries vulnerabilities, calculates health, writes to Sheets
    *
    * @param imageName - Repository path (e.g., "ubi8/ubi")
    * @param registry - Registry hostname
    * @param architecture - Architecture filter
+   * @param stream - Content stream pattern
    * @returns Processing result
    */
   public processImage(
     imageName: string,
     registry: string,
-    architecture: string
+    architecture: string,
+    stream: string = 'latest'
   ): ImageProcessingResult {
-    this.log('INFO', 'PROCESS_IMAGE', `Processing ${registry}/${imageName}`);
+    this.log('INFO', 'PROCESS_IMAGE', `Processing ${registry}/${imageName} (${architecture}, stream: ${stream})`);
 
     try {
       // Step 1: Find repository
       this.log('DEBUG', 'PROCESS_IMAGE', `Finding repository: ${imageName}`);
       const repository = this.catalogService.findRepository(imageName);
 
-      // Step 2: Find latest image
-      this.log('DEBUG', 'PROCESS_IMAGE', `Finding latest image for ${architecture}`);
-      const latestImage = this.catalogService.findLatestImage(registry, imageName, architecture);
+      // Step 2: Find latest image in stream
+      this.log('DEBUG', 'PROCESS_IMAGE', `Finding latest image for ${architecture}, stream: ${stream}`);
+      const latestImage = this.catalogService.findLatestImageInStream(registry, imageName, architecture, stream);
 
       if (!latestImage) {
-        throw new Error(`No images found for ${registry}/${imageName} (${architecture})`);
+        // Create error entry in CVE Data sheet for missing combination
+        this.log('ERROR', 'PROCESS_IMAGE', `No images found for ${registry}/${imageName} (${architecture}, stream: ${stream})`);
+        this.sheetsRepo.writeCVEData(
+          imageName,
+          architecture,
+          stream,
+          'N/A',
+          [{
+            cveId: `ERROR: Not found in registry`,
+            severity: 'None' as any,
+            imageId: '',
+            registry,
+            repository: imageName,
+            imageVersion: 'N/A',
+            affectedPackages: [],
+            description: `No ${architecture} images found for stream "${stream}" in ${registry}/${imageName}`,
+            advisoryId: '',
+            advisoryType: '',
+            publishedDate: new Date(),
+            discoveredAt: new Date(),
+            isActive: false
+          }],
+          0,
+          HealthStatus.UNKNOWN
+        );
+        throw new Error(`No images found for ${registry}/${imageName} (${architecture}, stream: ${stream})`);
       }
 
       this.log('INFO', 'PROCESS_IMAGE', `Latest version: ${latestImage.version} (${latestImage.imageId})`);
@@ -241,8 +318,8 @@ export class MonitoringOrchestrator {
         `Critical: ${healthIndex.criticalCves}, Important: ${healthIndex.importantCves}`
       );
 
-      // Step 5: Detect health status changes
-      const previousHealth = this.sheetsRepo.getPreviousHealthStatus(imageName);
+      // Step 5: Detect health status changes (per combination)
+      const previousHealth = this.sheetsRepo.getPreviousHealthStatus(imageName, architecture, stream);
       const previousStatus = previousHealth?.status || HealthStatus.UNKNOWN;
       const previousScore = previousHealth?.score || 0;
       const statusChanged = previousStatus !== healthIndex.status;
@@ -283,6 +360,8 @@ export class MonitoringOrchestrator {
       this.log('DEBUG', 'PROCESS_IMAGE', `Writing CVE data to Sheets`);
       this.sheetsRepo.writeCVEData(
         imageName,
+        architecture,
+        stream,
         latestImage.version,
         cveRecords,
         healthIndex.score,
@@ -297,6 +376,8 @@ export class MonitoringOrchestrator {
       this.sheetsRepo.appendHistoricalSnapshot({
         timestamp: new Date(),
         imageName: imageName,
+        architecture: architecture,
+        stream: stream,
         version: latestImage.version,
         totalCves: cveRecords.length,
         criticalCount: healthIndex.criticalCves,

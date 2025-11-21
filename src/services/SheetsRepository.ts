@@ -19,6 +19,8 @@ interface ConfigRow {
   enabled: boolean;
   severityThreshold: Severity;
   notes: string;
+  streams: string[];        // Content streams to track (e.g., ["4.7", "4.8", "4.9"])
+  architectures: string[];  // Architectures to track (e.g., ["amd64", "arm64"])
 }
 
 /**
@@ -46,6 +48,8 @@ interface LogEntry {
 interface HistoricalSnapshot {
   timestamp: Date;
   imageName: string;
+  architecture: string;
+  stream: string;
   version: string;
   totalCves: number;
   criticalCount: number;
@@ -76,7 +80,9 @@ export class SheetsRepository extends SheetsAdapter {
         imageName: String(row[0]),
         enabled: row[1] === true || row[1] === 'TRUE',
         severityThreshold: this.parseSeverity(row[2]),
-        notes: row[3] ? String(row[3]) : ''
+        notes: row[3] ? String(row[3]) : '',
+        streams: this.parseCommaSeparated(row[4], ['latest']),      // Column E: Stream (default: "latest")
+        architectures: this.parseCommaSeparated(row[5], ['amd64'])  // Column F: Architecture (default: "amd64")
       }))
       .filter(config => config.enabled); // Only return enabled images
   }
@@ -87,6 +93,8 @@ export class SheetsRepository extends SheetsAdapter {
    * Per contracts/sheets-schema.md - CVE Data sheet structure
    *
    * @param imageName - Full image name (e.g., "ubi8/ubi")
+   * @param architecture - Image architecture (e.g., "amd64", "arm64")
+   * @param stream - Content stream (e.g., "8", "4.7", "latest")
    * @param version - Image version/tag
    * @param cveRecords - Array of CVE records
    * @param healthIndex - Calculated health index (0-100)
@@ -94,6 +102,8 @@ export class SheetsRepository extends SheetsAdapter {
    */
   public writeCVEData(
     imageName: string,
+    architecture: string,
+    stream: string,
     version: string,
     cveRecords: CVERecord[],
     healthIndex: number,
@@ -101,23 +111,25 @@ export class SheetsRepository extends SheetsAdapter {
   ): void {
     const sheet = this.getSheet(SheetName.CVE_DATA);
 
-    // Step 1: Delete existing rows for this image
-    this.deleteRowsForImage(sheet, imageName);
+    // Step 1: Delete existing rows for this image+architecture+stream combination
+    this.deleteRowsForImageCombination(sheet, imageName, architecture, stream);
 
     // Step 2: Prepare new rows
     const newRows = cveRecords.map(cve => [
       imageName,                                    // A: Image Name
-      version,                                      // B: Version
-      cve.cveId,                                    // C: CVE ID
-      cve.severity,                                 // D: Severity
-      '',                                           // E: CVSS Score (not available from Red Hat API)
-      cve.affectedPackages.join(', '),              // F: Affected Packages
-      this.formatDate(cve.discoveredAt),            // G: Discovery Date
-      this.formatDate(cve.publishedDate),           // H: Published Date
-      `https://access.redhat.com/security/cve/${cve.cveId}`, // I: Advisory URL
-      healthIndex,                                  // J: Health Index
-      healthStatus,                                 // K: Health Status
-      this.formatDate(new Date())                   // L: Last Updated
+      architecture,                                 // B: Architecture
+      stream,                                       // C: Stream
+      version,                                      // D: Version
+      cve.cveId,                                    // E: CVE ID
+      cve.severity,                                 // F: Severity
+      '',                                           // G: CVSS Score (not available from Red Hat API)
+      cve.affectedPackages.join(', '),              // H: Affected Packages
+      this.formatDate(cve.discoveredAt),            // I: Discovery Date
+      this.formatDate(cve.publishedDate),           // J: Published Date
+      `https://access.redhat.com/security/cve/${cve.cveId}`, // K: Advisory URL
+      healthIndex,                                  // L: Health Index
+      healthStatus,                                 // M: Health Status
+      this.formatDate(new Date())                   // N: Last Updated
     ]);
 
     // Step 3: Append new rows
@@ -162,37 +174,45 @@ export class SheetsRepository extends SheetsAdapter {
     const row = [
       this.formatDate(snapshot.timestamp),          // A: Timestamp
       snapshot.imageName,                           // B: Image Name
-      snapshot.version,                             // C: Version
-      snapshot.totalCves,                           // D: Total CVEs
-      snapshot.criticalCount,                       // E: Critical Count
-      snapshot.importantCount,                      // F: Important Count
-      snapshot.moderateCount,                       // G: Moderate Count
-      snapshot.lowCount,                            // H: Low Count
-      snapshot.healthIndex,                         // I: Health Index
-      snapshot.healthStatus,                        // J: Health Status
-      snapshot.statusChange                         // K: Status Change
+      snapshot.architecture,                        // C: Architecture
+      snapshot.stream,                              // D: Stream
+      snapshot.version,                             // E: Version
+      snapshot.totalCves,                           // F: Total CVEs
+      snapshot.criticalCount,                       // G: Critical Count
+      snapshot.importantCount,                      // H: Important Count
+      snapshot.moderateCount,                       // I: Moderate Count
+      snapshot.lowCount,                            // J: Low Count
+      snapshot.healthIndex,                         // K: Health Index
+      snapshot.healthStatus,                        // L: Health Status
+      snapshot.statusChange                         // M: Status Change
     ];
 
     this.appendRows(SheetName.HISTORICAL, [row]);
   }
 
   /**
-   * Get previous health status for an image
-   * Reads the most recent historical snapshot for the given image
+   * Get previous health status for an image+architecture+stream combination
+   * Reads the most recent historical snapshot for the given combination
    *
    * @param imageName - Image name to look up
+   * @param architecture - Architecture to look up
+   * @param stream - Stream to look up
    * @returns Previous health status and score, or null if no history exists
    */
-  public getPreviousHealthStatus(imageName: string): { status: HealthStatus; score: number } | null {
+  public getPreviousHealthStatus(
+    imageName: string,
+    architecture: string,
+    stream: string
+  ): { status: HealthStatus; score: number } | null {
     const data = this.readAllData(SheetName.HISTORICAL);
 
-    // Find all rows for this image (skip header row)
+    // Find all rows for this image+architecture+stream combination (skip header row)
     const imageRows = data
-      .filter(row => row[1] === imageName) // Column B: Image Name
+      .filter(row => row[1] === imageName && row[2] === architecture && row[3] === stream)
       .map(row => ({
-        timestamp: row[0],                // Column A: Timestamp
-        healthIndex: Number(row[8]) || 0, // Column I: Health Index
-        healthStatus: row[9] as HealthStatus // Column J: Health Status
+        timestamp: row[0],                 // Column A: Timestamp
+        healthIndex: Number(row[10]) || 0, // Column K: Health Index (shifted by 2)
+        healthStatus: row[11] as HealthStatus // Column L: Health Status (shifted by 2)
       }));
 
     // Return null if no history
@@ -209,11 +229,43 @@ export class SheetsRepository extends SheetsAdapter {
   }
 
   /**
-   * Delete all rows for a specific image from a sheet
+   * Delete all rows for a specific image+architecture+stream combination from a sheet
    * Helper method for writeCVEData
    *
    * @param sheet - Google Sheets sheet object
    * @param imageName - Image name to filter by (column A)
+   * @param architecture - Architecture to filter by (column B)
+   * @param stream - Stream to filter by (column C)
+   */
+  private deleteRowsForImageCombination(
+    sheet: GoogleAppsScript.Spreadsheet.Sheet,
+    imageName: string,
+    architecture: string,
+    stream: string
+  ): void {
+    const data = sheet.getDataRange().getValues();
+    const rowsToDelete: number[] = [];
+
+    // Find rows matching image+architecture+stream combination (skip header row at index 0)
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0] === imageName && data[i][1] === architecture && data[i][2] === stream) {
+        rowsToDelete.push(i + 1); // +1 for 1-indexed rows
+      }
+    }
+
+    // Delete rows in reverse order to maintain correct indices
+    rowsToDelete.reverse().forEach(rowIndex => {
+      sheet.deleteRow(rowIndex);
+    });
+  }
+
+  /**
+   * Delete all rows for a specific image from a sheet
+   * Helper method for writeCVEData (legacy, kept for backwards compatibility)
+   *
+   * @param sheet - Google Sheets sheet object
+   * @param imageName - Image name to filter by (column A)
+   * @deprecated Use deleteRowsForImageCombination instead
    */
   private deleteRowsForImage(sheet: GoogleAppsScript.Spreadsheet.Sheet, imageName: string): void {
     const data = sheet.getDataRange().getValues();
@@ -248,5 +300,24 @@ export class SheetsRepository extends SheetsAdapter {
     };
 
     return severityMap[String(value)] || Severity.LOW;
+  }
+
+  /**
+   * Parse comma-separated string into array
+   * Trims whitespace and filters empty values
+   *
+   * @param value - Comma-separated string from sheet
+   * @param defaultValue - Default array if value is empty/null
+   * @returns Array of trimmed non-empty strings
+   */
+  private parseCommaSeparated(value: any, defaultValue: string[]): string[] {
+    if (!value || String(value).trim() === '') {
+      return defaultValue;
+    }
+
+    return String(value)
+      .split(',')
+      .map(item => item.trim())
+      .filter(item => item !== '');
   }
 }
