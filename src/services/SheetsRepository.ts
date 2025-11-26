@@ -211,22 +211,37 @@ export class SheetsRepository extends SheetsAdapter {
   ): { status: HealthStatus; score: number } | null {
     const data = this.readAllData(SheetName.HISTORICAL);
 
+    // Normalize input for comparison
+    const normalizedImageName = String(imageName).trim();
+    const normalizedArchitecture = String(architecture).trim();
+    const normalizedStream = String(stream).trim();
+
     // Find all rows for this image+architecture+stream combination (skip header row)
     const imageRows = data
-      .filter(row => row[1] === imageName && row[2] === architecture && row[3] === stream)
+      .filter(row => {
+        const rowImageName = String(row[1] || '').trim();
+        const rowArchitecture = String(row[2] || '').trim();
+        const rowStream = String(row[3] || '').trim();
+
+        return rowImageName === normalizedImageName &&
+               rowArchitecture === normalizedArchitecture &&
+               rowStream === normalizedStream;
+      })
       .map(row => ({
         timestamp: row[0],                 // Column A: Timestamp
-        healthIndex: Number(row[10]) || 0, // Column K: Health Index (shifted by 2)
-        healthStatus: row[11] as HealthStatus // Column L: Health Status (shifted by 2)
+        healthIndex: Number(row[10]) || 0, // Column K: Health Index
+        healthStatus: row[11] as HealthStatus // Column L: Health Status
       }));
 
     // Return null if no history
     if (imageRows.length === 0) {
+      Logger.log(`[SheetsRepository] No previous health status found for ${imageName} (${architecture}, ${stream})`);
       return null;
     }
 
     // Return most recent (last) entry
     const mostRecent = imageRows[imageRows.length - 1];
+    Logger.log(`[SheetsRepository] Found previous health status for ${imageName} (${architecture}, ${stream}): ${mostRecent.healthStatus} (${mostRecent.healthIndex})`);
     return {
       status: mostRecent.healthStatus,
       score: mostRecent.healthIndex
