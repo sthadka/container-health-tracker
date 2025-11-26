@@ -112,7 +112,11 @@ export class SheetsRepository extends SheetsAdapter {
     const sheet = this.getSheet(SheetName.CVE_DATA);
 
     // Step 1: Delete existing rows for this image+architecture+stream combination
-    this.deleteRowsForImageCombination(sheet, imageName, architecture, stream);
+    Logger.log(`[SheetsRepository] Processing ${imageName} (${architecture}, stream ${stream}, version ${version})`);
+    const deletedCount = this.deleteRowsForImageCombination(sheet, imageName, architecture, stream);
+    if (deletedCount > 0) {
+      Logger.log(`[SheetsRepository] Deleted ${deletedCount} existing row(s)`);
+    }
 
     // Step 2: Prepare new rows
     const newRows = cveRecords.map(cve => [
@@ -135,6 +139,7 @@ export class SheetsRepository extends SheetsAdapter {
     // Step 3: Append new rows
     if (newRows.length > 0) {
       this.appendRows(SheetName.CVE_DATA, newRows);
+      Logger.log(`[SheetsRepository] Added ${newRows.length} CVE row(s) for version ${version}`);
     }
   }
 
@@ -236,27 +241,51 @@ export class SheetsRepository extends SheetsAdapter {
    * @param imageName - Image name to filter by (column A)
    * @param architecture - Architecture to filter by (column B)
    * @param stream - Stream to filter by (column C)
+   * @returns Number of rows deleted
    */
   private deleteRowsForImageCombination(
     sheet: GoogleAppsScript.Spreadsheet.Sheet,
     imageName: string,
     architecture: string,
     stream: string
-  ): void {
+  ): number {
     const data = sheet.getDataRange().getValues();
     const rowsToDelete: number[] = [];
+    const versionsFound: string[] = [];
+
+    // Normalize input for comparison
+    const normalizedImageName = String(imageName).trim();
+    const normalizedArchitecture = String(architecture).trim();
+    const normalizedStream = String(stream).trim();
 
     // Find rows matching image+architecture+stream combination (skip header row at index 0)
     for (let i = 1; i < data.length; i++) {
-      if (data[i][0] === imageName && data[i][1] === architecture && data[i][2] === stream) {
+      const rowImageName = String(data[i][0] || '').trim();
+      const rowArchitecture = String(data[i][1] || '').trim();
+      const rowStream = String(data[i][2] || '').trim();
+      const rowVersion = String(data[i][3] || '').trim();
+
+      if (rowImageName === normalizedImageName &&
+          rowArchitecture === normalizedArchitecture &&
+          rowStream === normalizedStream) {
         rowsToDelete.push(i + 1); // +1 for 1-indexed rows
+        if (!versionsFound.includes(rowVersion)) {
+          versionsFound.push(rowVersion);
+        }
       }
+    }
+
+    // Log versions being replaced
+    if (versionsFound.length > 0) {
+      Logger.log(`[SheetsRepository] Replacing ${versionsFound.length} version(s): ${versionsFound.join(', ')}`);
     }
 
     // Delete rows in reverse order to maintain correct indices
     rowsToDelete.reverse().forEach(rowIndex => {
       sheet.deleteRow(rowIndex);
     });
+
+    return rowsToDelete.length;
   }
 
   /**
